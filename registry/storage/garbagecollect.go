@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/registry/storage/driver"
@@ -19,6 +20,7 @@ func emit(format string, a ...interface{}) {
 type GCOpts struct {
 	DryRun         bool
 	RemoveUntagged bool
+	OlderThan      time.Time
 }
 
 // ManifestDel contains manifest structure which will be deleted
@@ -35,12 +37,36 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		return fmt.Errorf("unable to convert Namespace to RepositoryEnumerator")
 	}
 
-	// mark
+	repos := make(map[string]struct{})
+	err := repositoryEnumerator.Enumerate(ctx, func(repoName string) error {
+		emit("will look at repo %s", repoName)
+		repos[repoName] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	blobService := registry.Blobs()
+	maybeDeleteBlobs := make(map[digest.Digest]struct{})
+	err = blobService.Enumerate(ctx, func(dgst digest.Digest, modTime time.Time) error {
+		if !opts.OlderThan.IsZero() && modTime.After(opts.OlderThan) {
+			return nil
+		}
+
+		maybeDeleteBlobs[dgst] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("error enumerating blobs: %v", err)
+	}
+
+	// mark all blobs referenced by manifests as not to be deleted
 	markSet := make(map[digest.Digest]struct{})
 	deleteLayerSet := make(map[string][]digest.Digest)
 	manifestArr := make([]ManifestDel, 0)
-	err := repositoryEnumerator.Enumerate(ctx, func(repoName string) error {
-		emit(repoName)
+	for repoName := range repos {
+		emit("Looking at repo %s", repoName)
 
 		var err error
 		named, err := reference.WithName(repoName)
@@ -87,9 +113,11 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			}
 			// Mark the manifest's blob
 			emit("%s: marking manifest %s ", repoName, dgst)
+			delete(maybeDeleteBlobs, dgst)
 			markSet[dgst] = struct{}{}
 
 			return markManifestReferences(dgst, manifestService, ctx, func(d digest.Digest) bool {
+				delete(maybeDeleteBlobs, d)
 				_, marked := markSet[d]
 				if !marked {
 					markSet[d] = struct{}{}
@@ -117,18 +145,20 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 		var deleteLayers []digest.Digest
 		err = layerEnumerator.Enumerate(ctx, func(dgst digest.Digest) error {
-			if _, ok := markSet[dgst]; !ok {
+			if _, shouldBeDeleted := maybeDeleteBlobs[dgst]; shouldBeDeleted {
+				emit("mark layer %s %s for delete", repoName, dgst)
 				deleteLayers = append(deleteLayers, dgst)
+			} else {
+				emit("mark layer %s %s for not_delete", repoName, dgst)
 			}
 			return nil
 		})
 		if len(deleteLayers) > 0 {
 			deleteLayerSet[repoName] = deleteLayers
 		}
-		return err
-	})
-	if err != nil {
-		return fmt.Errorf("failed to mark: %v", err)
+		if err != nil {
+			return err
+		}
 	}
 
 	manifestArr = unmarkReferencedManifest(manifestArr, markSet)
@@ -143,21 +173,9 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			}
 		}
 	}
-	blobService := registry.Blobs()
-	deleteSet := make(map[digest.Digest]struct{})
-	err = blobService.Enumerate(ctx, func(dgst digest.Digest) error {
-		// check if digest is in markSet. If not, delete it!
-		if _, ok := markSet[dgst]; !ok {
-			deleteSet[dgst] = struct{}{}
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("error enumerating blobs: %v", err)
-	}
-	emit("\n%d blobs marked, %d blobs and %d manifests eligible for deletion", len(markSet), len(deleteSet), len(manifestArr))
-	for dgst := range deleteSet {
-		emit("blob eligible for deletion: %s", dgst)
+	emit("\n%d blobs marked, %d blobs and %d manifests eligible for deletion", len(markSet), len(maybeDeleteBlobs), len(manifestArr))
+	for dgst := range maybeDeleteBlobs {
+		emit("PMDELETEBLOB %s", dgst)
 		if opts.DryRun {
 			continue
 		}
@@ -169,7 +187,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 	for repo, dgsts := range deleteLayerSet {
 		for _, dgst := range dgsts {
-			emit("%s: layer link eligible for deletion: %s", repo, dgst)
+			emit("PMDELETELAYER %s %s", repo, dgst)
 			if opts.DryRun {
 				continue
 			}

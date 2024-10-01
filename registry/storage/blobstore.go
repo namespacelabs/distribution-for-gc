@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"path"
+	"time"
 
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/internal/dcontext"
@@ -88,7 +89,7 @@ func (bs *blobStore) Put(ctx context.Context, mediaType string, p []byte) (distr
 	}, bs.driver.PutContent(ctx, bp, p)
 }
 
-func (bs *blobStore) Enumerate(ctx context.Context, ingester func(dgst digest.Digest) error) error {
+func (bs *blobStore) Enumerate(ctx context.Context, ingester func(dgst digest.Digest, modTime time.Time) error) error {
 	specPath, err := pathFor(blobsPathSpec{})
 	if err != nil {
 		return err
@@ -112,7 +113,7 @@ func (bs *blobStore) Enumerate(ctx context.Context, ingester func(dgst digest.Di
 			return err
 		}
 
-		return ingester(digest)
+		return ingester(digest, fileInfo.ModTime())
 	})
 }
 
