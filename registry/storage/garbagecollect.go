@@ -27,6 +27,12 @@ type GCOpts struct {
 	ExhaustiveNeeded ExhaustiveNeededImages
 }
 
+type FromDryRun struct {
+	BlobsToDelete  map[string]struct{}
+	LayersToDelete map[string]map[digest.Digest]struct{}
+	// TODO support for manifests
+}
+
 // ManifestDel contains manifest structure which will be deleted
 type ManifestDel struct {
 	Name   string
@@ -222,6 +228,38 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	}
 
 	return err
+}
+
+// TODO deduplicate with the above
+// TODO add support for remoing manifests
+func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool, what FromDryRun) error {
+	vacuum := NewVacuum(ctx, storageDriver)
+
+	for dgst := range what.BlobsToDelete {
+		emit("PMDELETEBLOB %s", dgst)
+		if dryRun {
+			continue
+		}
+		err := vacuum.RemoveBlob(string(dgst))
+		if err != nil {
+			return fmt.Errorf("failed to delete blob %s: %v", dgst, err)
+		}
+	}
+
+	for repo, dgsts := range what.LayersToDelete {
+		for dgst := range dgsts {
+			emit("PMDELETELAYER %s %s", repo, dgst)
+			if dryRun {
+				continue
+			}
+			err := vacuum.RemoveLayer(repo, dgst)
+			if err != nil {
+				return fmt.Errorf("failed to delete layer link %s of repo %s: %v", dgst, repo, err)
+			}
+		}
+	}
+
+	return nil
 }
 
 // unmarkReferencedManifest filters out manifest present in markSet

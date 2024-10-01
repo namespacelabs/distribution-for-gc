@@ -18,6 +18,7 @@ var (
 	dryRun                 = flag.Bool("dry_run", true, "do not actually remove the blobs")
 	removeUntagged         = flag.Bool("remove_untagged", false, "delete manifests that are not currently referenced via tag")
 	exhaustiveNeededImages = flag.String("exhaustive_needed", "", "file that contains image manifests that are needed")
+	realRunFromDryRun      = flag.String("real_run_from_dry_run", "", "pass dry run log, will delete what dry run marked")
 )
 
 func main() {
@@ -39,6 +40,15 @@ func run(ctx context.Context) error {
 	}
 	dumpExhaustiveNeeded(exhaustiveNeeded)
 
+	var fromDryRun storage.FromDryRun
+	if *realRunFromDryRun != "" {
+		if fd, err := parseFromDryRun(*realRunFromDryRun); err != nil {
+			return err
+		} else {
+			fromDryRun = fd
+		}
+	}
+
 	nsConfig := Config{
 		S3Storage: &S3Storage{
 			Bucket:             os.Getenv("S3_BUCKET_NAME"),
@@ -58,6 +68,13 @@ func run(ctx context.Context) error {
 	driver, err := factory.Create(ctx, config.Storage.Type(), config.Storage.Parameters())
 	if err != nil {
 		return fmt.Errorf("failed to make storage: %w", err)
+	}
+
+	if len(fromDryRun.BlobsToDelete) != 0 || len(fromDryRun.LayersToDelete) != 0 {
+		if err := storage.Sweep(ctx, driver, *dryRun, fromDryRun); err != nil {
+			return fmt.Errorf("failed to sweep: %v", err)
+		}
+		return nil
 	}
 
 	registry, err := storage.NewRegistry(ctx, driver)
