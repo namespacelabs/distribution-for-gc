@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	dryRun         = flag.Bool("dry_run", true, "do not actually remove the blobs")
-	removeUntagged = flag.Bool("remove_untagged", false, "delete manifests that are not currently referenced via tag")
+	dryRun                 = flag.Bool("dry_run", true, "do not actually remove the blobs")
+	removeUntagged         = flag.Bool("remove_untagged", false, "delete manifests that are not currently referenced via tag")
+	exhaustiveNeededImages = flag.String("exhaustive_needed", "", "file that contains image manifests that are needed")
 )
 
 func main() {
@@ -28,6 +29,16 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	var exhaustiveNeeded storage.ExhaustiveNeededImages
+	if *exhaustiveNeededImages != "" {
+		if en, err := parseExhaustiveNeeded(*exhaustiveNeededImages); err != nil {
+			return err
+		} else {
+			exhaustiveNeeded = en
+		}
+	}
+	dumpExhaustiveNeeded(exhaustiveNeeded)
+
 	nsConfig := Config{
 		S3Storage: &S3Storage{
 			Bucket:             os.Getenv("S3_BUCKET_NAME"),
@@ -57,9 +68,10 @@ func run(ctx context.Context) error {
 	olderThan := time.Now().Add(-3 * 24 * time.Hour)
 
 	if err := storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{
-		DryRun:         *dryRun,
-		RemoveUntagged: *removeUntagged,
-		OlderThan:      olderThan,
+		DryRun:           *dryRun,
+		RemoveUntagged:   *removeUntagged,
+		OlderThan:        olderThan,
+		ExhaustiveNeeded: exhaustiveNeeded,
 	}); err != nil {
 		return fmt.Errorf("failed to garbage collect: %v", err)
 	}

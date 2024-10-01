@@ -16,11 +16,15 @@ func emit(format string, a ...interface{}) {
 	fmt.Printf(format+"\n", a...)
 }
 
+type NeededImages map[string]struct{}
+type ExhaustiveNeededImages map[string]*NeededImages
+
 // GCOpts contains options for garbage collector
 type GCOpts struct {
-	DryRun         bool
-	RemoveUntagged bool
-	OlderThan      time.Time
+	DryRun           bool
+	RemoveUntagged   bool
+	OlderThan        time.Time
+	ExhaustiveNeeded ExhaustiveNeededImages
 }
 
 // ManifestDel contains manifest structure which will be deleted
@@ -67,6 +71,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	manifestArr := make([]ManifestDel, 0)
 	for repoName := range repos {
 		emit("Looking at repo %s", repoName)
+		exhaustiveNeeded := opts.ExhaustiveNeeded[repoName]
 
 		var err error
 		named, err := reference.WithName(repoName)
@@ -89,28 +94,46 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		}
 
 		err = manifestEnumerator.Enumerate(ctx, func(dgst digest.Digest) error {
-			if opts.RemoveUntagged {
+			removeDueToUntagged := false
+			removeDueToNotNeeded := false
+
+			if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
+				// For this repo we know exhaustively which images are needed.
+				// If this one is not part of that, get rid of it :-)
+				if _, needed := (*exhaustiveNeeded)[repoName]; !needed {
+					removeDueToNotNeeded = true
+					emit("remove manifest %s: not needed", dgst)
+				}
+			}
+
+			if !removeDueToNotNeeded && opts.RemoveUntagged {
 				// fetch all tags where this manifest is the latest one
 				tags, err := repository.Tags(ctx).Lookup(ctx, distribution.Descriptor{Digest: dgst})
 				if err != nil {
 					return fmt.Errorf("failed to retrieve tags for digest %v: %v", dgst, err)
 				}
 				if len(tags) == 0 {
-					// fetch all tags from repository
-					// all of these tags could contain manifest in history
-					// which means that we need check (and delete) those references when deleting manifest
-					allTags, err := repository.Tags(ctx).All(ctx)
-					if err != nil {
-						if _, ok := err.(distribution.ErrRepositoryUnknown); ok {
-							emit("manifest tags path of repository %s does not exist", repoName)
-							return nil
-						}
-						return fmt.Errorf("failed to retrieve tags %v", err)
-					}
-					manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, Tags: allTags})
-					return nil
+					removeDueToUntagged = true
+					emit("remove manifest %s: untagged", dgst)
 				}
 			}
+
+			if removeDueToUntagged || removeDueToNotNeeded {
+				// fetch all tags from repository
+				// all of these tags could contain manifest in history
+				// which means that we need check (and delete) those references when deleting manifest
+				allTags, err := repository.Tags(ctx).All(ctx)
+				if err != nil {
+					if _, ok := err.(distribution.ErrRepositoryUnknown); ok {
+						emit("manifest tags path of repository %s does not exist", repoName)
+						return nil
+					}
+					return fmt.Errorf("failed to retrieve tags %v", err)
+				}
+				manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, Tags: allTags})
+				return nil
+			}
+
 			// Mark the manifest's blob
 			emit("%s: marking manifest %s ", repoName, dgst)
 			delete(maybeDeleteBlobs, dgst)
