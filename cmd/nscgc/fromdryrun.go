@@ -10,10 +10,11 @@ import (
 	"github.com/opencontainers/go-digest"
 )
 
-func parseFromDryRun(path string) (storage.FromDryRun, error) {
-	res := storage.FromDryRun{
-		BlobsToDelete:  make(map[string]struct{}),
-		LayersToDelete: make(map[string]map[digest.Digest]struct{}),
+func parseFromDryRun(path string) (storage.ToDelete, error) {
+	res := storage.ToDelete{
+		BlobsToDelete:     make(map[digest.Digest]struct{}),
+		LayersToDelete:    make(map[string][]digest.Digest),
+		ManifestsToDelete: []storage.ManifestDel{},
 	}
 
 	file, err := os.Open(path)
@@ -26,26 +27,35 @@ func parseFromDryRun(path string) (storage.FromDryRun, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "PMDELETEBLOB ") {
-			dgst := strings.TrimPrefix(line, "PMDELETEBLOB ")
+			dgst := digest.Digest(strings.TrimPrefix(line, "PMDELETEBLOB "))
 			res.BlobsToDelete[dgst] = struct{}{}
 			continue
 		}
 
 		if strings.HasPrefix(line, "PMDELETELAYER ") {
-			parts := strings.Split(line, " ")
-			if len(parts) != 3 {
+			params := strings.TrimPrefix(line, "PMDELETELAYER ")
+			parts := strings.Split(params, "|")
+			if len(parts) != 2 {
 				return res, fmt.Errorf(" could not parse %s", line)
 			}
-			repo := parts[1]
-			dgst := digest.Digest(parts[2])
-			if _, hasMap := res.LayersToDelete[repo]; !hasMap {
-				res.LayersToDelete[repo] = make(map[digest.Digest]struct{})
-			}
-			res.LayersToDelete[repo][dgst] = struct{}{}
+			repo := parts[0]
+			dgst := digest.Digest(parts[1])
+			res.LayersToDelete[repo] = append(res.LayersToDelete[repo], dgst)
 			continue
 		}
 
-		continue
+		if strings.HasPrefix(line, "PMDELETEMANIFEST ") {
+			params := strings.TrimPrefix(line, "PMDELETEMANIFEST ")
+			parts := strings.Split(params, "|")
+			if len(parts) != 3 {
+				return res, fmt.Errorf(" could not parse %s", line)
+			}
+			name := parts[0]
+			digest := digest.Digest(parts[1])
+			tags := strings.Split(parts[2], ",")
+			res.ManifestsToDelete = append(res.ManifestsToDelete, storage.ManifestDel{Name: name, Digest: digest, Tags: tags})
+			continue
+		}
 	}
 
 	if err := scanner.Err(); err != nil {

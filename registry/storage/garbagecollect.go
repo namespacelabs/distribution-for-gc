@@ -17,7 +17,7 @@ func emit(format string, a ...interface{}) {
 	fmt.Printf(format+"\n", a...)
 }
 
-type NeededImages map[string]struct{}
+type NeededImages map[digest.Digest]struct{}
 type ExhaustiveNeededImages map[string]*NeededImages
 
 // GCOpts contains options for garbage collector
@@ -28,10 +28,10 @@ type GCOpts struct {
 	ExhaustiveNeeded ExhaustiveNeededImages
 }
 
-type FromDryRun struct {
-	BlobsToDelete  map[string]struct{}
-	LayersToDelete map[string]map[digest.Digest]struct{}
-	// TODO support for manifests
+type ToDelete struct {
+	BlobsToDelete     map[digest.Digest]struct{}
+	LayersToDelete    map[string][]digest.Digest
+	ManifestsToDelete []ManifestDel
 }
 
 // ManifestDel contains manifest structure which will be deleted
@@ -107,7 +107,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
 				// For this repo we know exhaustively which images are needed.
 				// If this one is not part of that, get rid of it :-)
-				if _, needed := (*exhaustiveNeeded)[string(dgst)]; !needed {
+				if _, needed := (*exhaustiveNeeded)[dgst]; !needed {
 					removeDueToNotNeeded = true
 					emit("remove manifest %s: not needed", dgst)
 				}
@@ -194,54 +194,36 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	manifestArr = unmarkReferencedManifest(manifestArr, markSet)
 
 	// sweep
-	vacuum := NewVacuum(ctx, storageDriver)
-	for _, obj := range manifestArr {
-		emit("PMDELETEMANIFEST %s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.Tags, ","))
-		if !opts.DryRun {
-			err = vacuum.RemoveManifest(obj.Name, obj.Digest, obj.Tags)
-			if err != nil {
-				return fmt.Errorf("failed to delete manifest %s: %v", obj.Digest, err)
-			}
-		}
-	}
 	emit("\n%d blobs marked, %d blobs and %d manifests eligible for deletion", len(markSet), len(maybeDeleteBlobs), len(manifestArr))
-	for dgst := range maybeDeleteBlobs {
-		emit("PMDELETEBLOB %s", dgst)
-		if opts.DryRun {
-			continue
-		}
-		err = vacuum.RemoveBlob(string(dgst))
-		if err != nil {
-			return fmt.Errorf("failed to delete blob %s: %v", dgst, err)
-		}
-	}
 
-	for repo, dgsts := range deleteLayerSet {
-		for _, dgst := range dgsts {
-			emit("PMDELETELAYER %s|%s", repo, dgst)
-			if opts.DryRun {
-				continue
-			}
-			err = vacuum.RemoveLayer(repo, dgst)
-			if err != nil {
-				return fmt.Errorf("failed to delete layer link %s of repo %s: %v", dgst, repo, err)
-			}
-		}
-	}
-
-	return err
+	return Sweep(ctx, storageDriver, opts.DryRun, ToDelete{
+		ManifestsToDelete: manifestArr,
+		BlobsToDelete:     maybeDeleteBlobs,
+		LayersToDelete:    deleteLayerSet,
+	})
 }
 
-// TODO deduplicate with the above
-// TODO add support for remoing manifests
-func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool, what FromDryRun) error {
+func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool, what ToDelete) error {
 	vacuum := NewVacuum(ctx, storageDriver)
+
+	for _, obj := range what.ManifestsToDelete {
+		emit("PMDELETEMANIFEST %s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.Tags, ","))
+		if dryRun {
+			continue
+		}
+
+		err := vacuum.RemoveManifest(obj.Name, obj.Digest, obj.Tags)
+		if err != nil {
+			return fmt.Errorf("failed to delete manifest %s: %v", obj.Digest, err)
+		}
+	}
 
 	for dgst := range what.BlobsToDelete {
 		emit("PMDELETEBLOB %s", dgst)
 		if dryRun {
 			continue
 		}
+
 		err := vacuum.RemoveBlob(string(dgst))
 		if err != nil {
 			return fmt.Errorf("failed to delete blob %s: %v", dgst, err)
@@ -249,11 +231,12 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 	}
 
 	for repo, dgsts := range what.LayersToDelete {
-		for dgst := range dgsts {
-			emit("PMDELETELAYER %s %s", repo, dgst)
+		for _, dgst := range dgsts {
+			emit("PMDELETELAYER %s|%s", repo, dgst)
 			if dryRun {
 				continue
 			}
+
 			err := vacuum.RemoveLayer(repo, dgst)
 			if err != nil {
 				return fmt.Errorf("failed to delete layer link %s of repo %s: %v", dgst, repo, err)

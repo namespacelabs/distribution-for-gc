@@ -37,10 +37,11 @@ func run(ctx context.Context) error {
 		} else {
 			exhaustiveNeeded = en
 		}
-	}
-	dumpExhaustiveNeeded(exhaustiveNeeded)
 
-	var fromDryRun storage.FromDryRun
+		dumpExhaustiveNeeded(exhaustiveNeeded)
+	}
+
+	var fromDryRun storage.ToDelete
 	if *realRunFromDryRun != "" {
 		if fd, err := parseFromDryRun(*realRunFromDryRun); err != nil {
 			return err

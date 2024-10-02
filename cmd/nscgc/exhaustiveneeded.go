@@ -4,9 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/distribution/distribution/v3/registry/storage"
+	"github.com/opencontainers/go-digest"
 )
 
 func parseExhaustiveNeeded(path string) (storage.ExhaustiveNeededImages, error) {
@@ -34,15 +34,13 @@ func parseExhaustiveNeeded(path string) (storage.ExhaustiveNeededImages, error) 
 			return nil, fmt.Errorf("currently only supports images refrenced by digest, got something else for %s", ref.Repository)
 		}
 
-		digest := canonicalizeDigest(ref.Digest)
-
 		m := res[ref.Repository]
 		if m == nil {
 			m = &storage.NeededImages{}
 			res[ref.Repository] = m
 		}
 
-		(*m)[digest] = struct{}{}
+		(*m)[digest.Digest(ref.Digest)] = struct{}{}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -50,10 +48,6 @@ func parseExhaustiveNeeded(path string) (storage.ExhaustiveNeededImages, error) 
 	}
 
 	return res, nil
-}
-
-func canonicalizeDigest(digest string) string {
-	return strings.TrimPrefix(digest, "sha256:")
 }
 
 func dumpExhaustiveNeeded(en storage.ExhaustiveNeededImages) {
