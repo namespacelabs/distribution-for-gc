@@ -106,7 +106,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
 				// For this repo we know exhaustively which images are needed.
 				// If this one is not part of that, get rid of it :-)
-				if _, needed := (*exhaustiveNeeded)[repoName]; !needed {
+				if _, needed := (*exhaustiveNeeded)[string(dgst)]; !needed {
 					removeDueToNotNeeded = true
 					emit("remove manifest %s: not needed", dgst)
 				}
