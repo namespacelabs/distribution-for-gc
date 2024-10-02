@@ -26,7 +26,7 @@ func parseFromDryRun(path string) (storage.FromDryRun, error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "PMDELETEBLOB ") {
-			dgst := strings.TrimPrefix(line, "PMDELETEBLOB")
+			dgst := strings.TrimPrefix(line, "PMDELETEBLOB ")
 			res.BlobsToDelete[dgst] = struct{}{}
 			continue
 		}
