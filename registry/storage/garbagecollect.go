@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/distribution/distribution/v3"
@@ -194,8 +195,9 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 	// sweep
 	vacuum := NewVacuum(ctx, storageDriver)
-	if !opts.DryRun {
-		for _, obj := range manifestArr {
+	for _, obj := range manifestArr {
+		emit("PMDELETEMANIFEST %s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.Tags, ","))
+		if !opts.DryRun {
 			err = vacuum.RemoveManifest(obj.Name, obj.Digest, obj.Tags)
 			if err != nil {
 				return fmt.Errorf("failed to delete manifest %s: %v", obj.Digest, err)
@@ -216,7 +218,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 	for repo, dgsts := range deleteLayerSet {
 		for _, dgst := range dgsts {
-			emit("PMDELETELAYER %s %s", repo, dgst)
+			emit("PMDELETELAYER %s|%s", repo, dgst)
 			if opts.DryRun {
 				continue
 			}
