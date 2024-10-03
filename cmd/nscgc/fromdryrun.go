@@ -24,6 +24,8 @@ func parseFromDryRun(path string) (storage.ToDelete, error) {
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "PMDELETEBLOB ") {
