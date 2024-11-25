@@ -49,13 +49,14 @@ func parseFromDryRun(path string) (storage.ToDelete, error) {
 		if strings.HasPrefix(line, "PMDELETEMANIFEST ") {
 			params := strings.TrimPrefix(line, "PMDELETEMANIFEST ")
 			parts := strings.Split(params, "|")
-			if len(parts) != 3 {
+			if len(parts) != 4 {
 				return res, fmt.Errorf(" could not parse %s", line)
 			}
 			name := parts[0]
 			digest := digest.Digest(parts[1])
-			tags := strings.Split(parts[2], ",")
-			res.ManifestsToDelete = append(res.ManifestsToDelete, storage.ManifestDel{Name: name, Digest: digest, Tags: tags})
+			currentTags := strings.Split(parts[2], ",")
+			histTags := strings.Split(parts[3], ",")
+			res.ManifestsToDelete = append(res.ManifestsToDelete, storage.ManifestDel{Name: name, Digest: digest, CurrentTags: currentTags, HistTags: histTags})
 			continue
 		}
 	}

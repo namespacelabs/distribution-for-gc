@@ -36,9 +36,10 @@ type ToDelete struct {
 
 // ManifestDel contains manifest structure which will be deleted
 type ManifestDel struct {
-	Name   string
-	Digest digest.Digest
-	Tags   []string
+	Name        string
+	Digest      digest.Digest
+	CurrentTags []string
+	HistTags    []string
 }
 
 // MarkAndSweep performs a mark and sweep of registry data
@@ -76,6 +77,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	markSet := make(map[digest.Digest]struct{})
 	deleteLayerSet := make(map[string][]digest.Digest)
 	manifestArr := make([]ManifestDel, 0)
+
 	for repoName := range repos {
 		emit("Looking at repo %s", repoName)
 		exhaustiveNeeded := opts.ExhaustiveNeeded[repoName]
@@ -89,6 +91,8 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		if err != nil {
 			return fmt.Errorf("failed to construct repository: %v", err)
 		}
+
+		tagsService := repository.Tags(ctx)
 
 		manifestService, err := repository.Manifests(ctx)
 		if err != nil {
@@ -115,7 +119,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 			if !removeDueToNotNeeded && opts.RemoveUntagged {
 				// fetch all tags where this manifest is the latest one
-				tags, err := repository.Tags(ctx).Lookup(ctx, distribution.Descriptor{Digest: dgst})
+				tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
 				if err != nil {
 					return fmt.Errorf("failed to retrieve tags for digest %v: %v", dgst, err)
 				}
@@ -126,18 +130,12 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			}
 
 			if removeDueToUntagged || removeDueToNotNeeded {
-				// fetch all tags from repository
-				// all of these tags could contain manifest in history
-				// which means that we need check (and delete) those references when deleting manifest
-				allTags, err := repository.Tags(ctx).All(ctx)
+				// Get tags that currently refer to this manifest and those that used to refer to it.
+				currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
 				if err != nil {
-					if _, ok := err.(distribution.ErrRepositoryUnknown); ok {
-						emit("manifest tags path of repository %s does not exist", repoName)
-						return nil
-					}
-					return fmt.Errorf("failed to retrieve tags %v", err)
+					return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
 				}
-				manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, Tags: allTags})
+				manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
 				return nil
 			}
 
@@ -207,12 +205,12 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 	vacuum := NewVacuum(ctx, storageDriver)
 
 	for _, obj := range what.ManifestsToDelete {
-		emit("PMDELETEMANIFEST %s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.Tags, ","))
+		emit("PMDELETEMANIFEST %s|%s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.CurrentTags, ","), strings.Join(obj.HistTags, ","))
 		if dryRun {
 			continue
 		}
 
-		err := vacuum.RemoveManifest(obj.Name, obj.Digest, obj.Tags)
+		err := vacuum.RemoveManifest(obj.Name, obj.Digest, obj.CurrentTags, obj.HistTags)
 		if err != nil {
 			return fmt.Errorf("failed to delete manifest %s: %v", obj.Digest, err)
 		}

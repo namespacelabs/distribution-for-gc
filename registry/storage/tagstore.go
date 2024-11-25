@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"path"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -10,6 +12,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/registry/storage/driver"
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
 )
 
@@ -24,6 +27,8 @@ type tagStore struct {
 	repository       *repository
 	blobStore        *blobStore
 	concurrencyLimit int
+	digestToCurrent  map[digest.Digest][]string
+	digestToHist     map[digest.Digest][]string
 }
 
 // All returns all tags
@@ -228,4 +233,116 @@ func (ts *tagStore) ManifestDigests(ctx context.Context, tag string) ([]digest.D
 		return nil, err
 	}
 	return dgsts, nil
+}
+
+func (ts *tagStore) Lookup2(ctx context.Context, desc distribution.Descriptor) ([]string, []string, error) {
+	if ts.digestToCurrent == nil || ts.digestToHist == nil {
+		err := ts.buildMap(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	return ts.digestToCurrent[desc.Digest], ts.digestToHist[desc.Digest], nil
+}
+
+func (ts *tagStore) buildMap(ctx context.Context) error {
+	allTags, err := ts.All(ctx)
+	switch err.(type) {
+	case distribution.ErrRepositoryUnknown:
+		// This tag store has been initialized but not yet populated
+		break
+	case nil:
+		break
+	default:
+		return err
+	}
+
+	ts.digestToCurrent = make(map[digest.Digest][]string)
+	ts.digestToHist = make(map[digest.Digest][]string)
+
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(ts.concurrencyLimit)
+
+	var (
+		mu sync.Mutex
+	)
+	for _, tag := range allTags {
+		if ctx.Err() != nil {
+			break
+		}
+		tag := tag
+
+		g.Go(func() error {
+			tagLinkPathSpec := manifestTagCurrentPathSpec{
+				name: ts.repository.Named().Name(),
+				tag:  tag,
+			}
+
+			tagLinkPath, _ := pathFor(tagLinkPathSpec)
+			tagDigest, err := ts.blobStore.readlink(ctx, tagLinkPath)
+			if err != nil {
+				switch err.(type) {
+				case storagedriver.PathNotFoundError:
+					return nil
+				}
+				return err
+			}
+
+			//	manifestTagIndexPathSpec:              <root>/v2/repositories/<name>/_manifests/tags/<tag>/index/
+			//	manifestTagIndexEntryPathSpec:         <root>/v2/repositories/<name>/_manifests/tags/<tag>/index/<algorithm>/<hex digest>/
+			//	manifestTagIndexEntryLinkPathSpec:     <root>/v2/repositories/<name>/_manifests/tags/<tag>/index/<algorithm>/<hex digest>/link
+			indexPath, err := pathFor(manifestTagIndexPathSpec{name: ts.repository.Named().Name(), tag: tag})
+			if err != nil {
+				return err
+			}
+
+			digestToHist := make(map[digest.Digest][]string)
+			ts.blobStore.driver.Walk(ctx, indexPath, func(fileInfo driver.FileInfo) error {
+				if fileInfo.IsDir() {
+					return nil
+				}
+
+				dir, fileName := path.Split(fileInfo.Path())
+				if fileName != "link" {
+					return nil
+				}
+
+				dgst, err := ts.blobStore.readlink(ctx, fileInfo.Path())
+				if err != nil {
+					return fmt.Errorf("can not read link %s: %v", fileInfo.Path(), err)
+				}
+
+				dirRest, cont := path.Split(filepath.Clean(dir))
+				_, algorithm := path.Split(filepath.Clean(dirRest))
+				dgst2, err := digest.Parse(algorithm + ":" + cont)
+				if err != nil {
+					return fmt.Errorf("can not parse diegst from %s: %v", dir, err)
+				}
+
+				if dgst != dgst2 {
+					return fmt.Errorf("digest in %s does not match dir-derived digest", fileInfo.Path())
+				}
+
+				digestToHist[dgst] = append(digestToHist[dgst], tag)
+				return nil
+			})
+
+			mu.Lock()
+			ts.digestToCurrent[tagDigest] = append(ts.digestToCurrent[tagDigest], tag)
+			for digest, entries := range digestToHist {
+				ts.digestToHist[digest] = append(ts.digestToHist[digest], entries...)
+			}
+			mu.Unlock()
+
+			return nil
+		})
+	}
+
+	err = g.Wait()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

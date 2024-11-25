@@ -64,8 +64,6 @@ func run(ctx context.Context) error {
 
 	config := MakeDistributionConfig(nsConfig)
 
-	time.Sleep(4 * time.Second)
-
 	driver, err := factory.Create(ctx, config.Storage.Type(), config.Storage.Parameters())
 	if err != nil {
 		return fmt.Errorf("failed to make storage: %w", err)

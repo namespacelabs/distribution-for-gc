@@ -64,3 +64,7 @@ func (pt proxyTagService) All(ctx context.Context) ([]string, error) {
 func (pt proxyTagService) Lookup(ctx context.Context, digest distribution.Descriptor) ([]string, error) {
 	return []string{}, distribution.ErrUnsupported
 }
+
+func (pt proxyTagService) Lookup2(ctx context.Context, digest distribution.Descriptor) ([]string, []string, error) {
+	return []string{}, []string{}, distribution.ErrUnsupported
+}

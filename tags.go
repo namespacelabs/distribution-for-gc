@@ -26,6 +26,9 @@ type TagService interface {
 
 	// Lookup returns the set of tags referencing the given digest.
 	Lookup(ctx context.Context, digest Descriptor) ([]string, error)
+
+	// Returns the set of tags refcurrently referencing the given digest, and the set of tags that historically referenced the given digest.
+	Lookup2(ctx context.Context, digest Descriptor) ([]string, []string, error)
 }
 
 // TagManifestsProvider provides method to retrieve the digests of manifests that a tag historically
