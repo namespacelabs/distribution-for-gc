@@ -81,7 +81,7 @@ func (v Vacuum) RemoveManifest(name string, dgst digest.Digest, currentTags []st
 	}
 
 	for _, tag := range currentTags {
-		tagPath, err := pathFor(manifestTagPathSpec{
+		tagPath, err := pathFor(manifestTagCurrentPathSpec{
 			name: name,
 			tag:  tag,
 		})
@@ -100,7 +100,7 @@ func (v Vacuum) RemoveManifest(name string, dgst digest.Digest, currentTags []st
 			return err
 		}
 
-		if revision == dgst {
+		if revision != dgst {
 			dcontext.GetLogger(v.ctx).Infof("tag %s now points to %v and not to %v anymore -> skipping", tag, revision, dgst)
 			continue
 
@@ -117,7 +117,16 @@ func (v Vacuum) RemoveManifest(name string, dgst digest.Digest, currentTags []st
 		return err
 	}
 	dcontext.GetLogger(v.ctx).Infof("deleting manifest: %s", manifestPath)
-	return v.driver.Delete(v.ctx, manifestPath)
+	err = v.driver.Delete(v.ctx, manifestPath)
+	if err != nil {
+		switch err.(type) {
+		case storagedriver.PathNotFoundError:
+			dcontext.GetLogger(v.ctx).Infof("manifest %s already gone", manifestPath)
+			return nil
+		}
+	}
+
+	return err
 }
 
 // RemoveRepository removes a repository directory from the

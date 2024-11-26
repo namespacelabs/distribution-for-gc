@@ -54,8 +54,17 @@ func parseFromDryRun(path string) (storage.ToDelete, error) {
 			}
 			name := parts[0]
 			digest := digest.Digest(parts[1])
-			currentTags := strings.Split(parts[2], ",")
-			histTags := strings.Split(parts[3], ",")
+
+			currentTags := []string{}
+			if parts[2] != "" {
+				currentTags = strings.Split(parts[2], ",")
+			}
+
+			histTags := []string{}
+			if parts[3] != "" {
+				histTags = strings.Split(parts[3], ",")
+			}
+
 			res.ManifestsToDelete = append(res.ManifestsToDelete, storage.ManifestDel{Name: name, Digest: digest, CurrentTags: currentTags, HistTags: histTags})
 			continue
 		}
