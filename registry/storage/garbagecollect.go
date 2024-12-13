@@ -60,12 +60,14 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	}
 
 	blobService := registry.Blobs()
+	allBlobs := make(map[digest.Digest]int64)
 	maybeDeleteBlobs := make(map[digest.Digest]struct{})
-	err = blobService.Enumerate(ctx, func(dgst digest.Digest, modTime time.Time) error {
+	err = blobService.Enumerate(ctx, func(dgst digest.Digest, modTime time.Time, size int64) error {
 		if !opts.OlderThan.IsZero() && modTime.After(opts.OlderThan) {
 			return nil
 		}
 
+		allBlobs[dgst] = size
 		maybeDeleteBlobs[dgst] = struct{}{}
 		return nil
 	})
@@ -79,6 +81,8 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	manifestArr := make([]ManifestDel, 0)
 
 	for repoName := range repos {
+		repoUsedBlobs := make(map[digest.Digest]int64)
+
 		emit("Looking at repo %s", repoName)
 		exhaustiveNeeded := opts.ExhaustiveNeeded[repoName]
 
@@ -149,8 +153,9 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 				_, marked := markSet[d]
 				if !marked {
 					markSet[d] = struct{}{}
-					emit("%s: marking blob %s", repoName, d)
+					emit("%s: marking blob %s for not_delete", repoName, d)
 				}
+				repoUsedBlobs[dgst] = allBlobs[dgst]
 				return marked
 			})
 		})
@@ -178,6 +183,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 				deleteLayers = append(deleteLayers, dgst)
 			} else {
 				emit("mark layer %s %s for not_delete", repoName, dgst)
+				repoUsedBlobs[dgst] = allBlobs[dgst]
 			}
 			return nil
 		})
@@ -187,6 +193,13 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		if err != nil {
 			return err
 		}
+
+		var totalBlobSize int64
+		for _, size := range repoUsedBlobs {
+			totalBlobSize += size
+		}
+
+		emit("Repo blob size %s: %d MB", repoName, totalBlobSize/1024/1024)
 	}
 
 	manifestArr = unmarkReferencedManifest(manifestArr, markSet)
@@ -239,6 +252,7 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 			if err != nil {
 				return fmt.Errorf("failed to delete layer link %s of repo %s: %v", dgst, repo, err)
 			}
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 
