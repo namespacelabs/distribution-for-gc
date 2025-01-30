@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 
 	"github.com/distribution/distribution/v3/registry/storage"
 	"github.com/opencontainers/go-digest"
@@ -63,3 +64,56 @@ func dumpExhaustiveNeeded(en storage.ExhaustiveNeededImages) {
 		}
 	}
 }
+
+func parseExhaustiveNeededV2(path string) (storage.ExhaustiveNeededImages, error) {
+	res := storage.ExhaustiveNeededImages{}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	digests := false
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		if !digests && digestRegex.MatchString(line) {
+			digests = true
+		}
+
+		if digests && !digestRegex.MatchString(line) {
+			return nil, fmt.Errorf("didn't expect non-digest %s", line)
+		}
+
+		if !digests {
+			m := res[line]
+			if m == nil {
+				m = &storage.NeededImages{}
+				res[line] = m
+			}
+		}
+		if digests {
+			d := digest.NewDigestFromEncoded(digest.SHA256, line)
+			for _, repo := range res {
+				(*repo)[d] = struct{}{}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+var (
+	// sha256
+	digestRegex = regexp.MustCompile("[A-Fa-f0-9]{64}")
+)
