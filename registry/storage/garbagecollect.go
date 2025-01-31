@@ -26,6 +26,7 @@ type GCOpts struct {
 	RemoveUntagged   bool
 	OlderThan        time.Time
 	ExhaustiveNeeded ExhaustiveNeededImages
+	DeleteManifests  bool
 }
 
 type ToDelete struct {
@@ -44,6 +45,14 @@ type ManifestDel struct {
 
 // MarkAndSweep performs a mark and sweep of registry data
 func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, registry distribution.Namespace, opts GCOpts) error {
+	if opts.DeleteManifests {
+		emit("Deleting manifests")
+	} else {
+		emit("Not deleting manifests")
+	}
+
+	emit("Considering all objects older than %s for deletion\n", opts.OlderThan.Format(time.RFC3339))
+
 	repositoryEnumerator, ok := registry.(distribution.RepositoryEnumerator)
 	if !ok {
 		return fmt.Errorf("unable to convert Namespace to RepositoryEnumerator")
@@ -60,10 +69,13 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	}
 
 	blobService := registry.Blobs()
-	allBlobs := make(map[digest.Digest]int64)
+	allBlobs := make(map[digest.Digest]int64)        // all blobs and their size
+	blobModTime := make(map[digest.Digest]time.Time) // all blobs and their mod time
 	maybeDeleteBlobs := make(map[digest.Digest]struct{})
 	err = blobService.Enumerate(ctx, func(dgst digest.Digest, modTime time.Time, size int64) error {
-		if !opts.OlderThan.IsZero() && modTime.After(opts.OlderThan) {
+		blobModTime[dgst] = modTime
+
+		if modTime.After(opts.OlderThan) {
 			return nil
 		}
 
@@ -109,42 +121,61 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		}
 
 		err = manifestEnumerator.Enumerate(ctx, func(dgst digest.Digest) error {
-			removeDueToUntagged := false
-			removeDueToNotNeeded := false
+			if opts.DeleteManifests {
+				modTime, ok := blobModTime[dgst]
 
-			if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
-				// For this repo we know exhaustively which images are needed.
-				// If this one is not part of that, get rid of it :-)
-				if _, needed := (*exhaustiveNeeded)[dgst]; !needed {
-					removeDueToNotNeeded = true
-					emit("remove manifest %s: not needed", dgst)
+				if !ok {
+					// in this case it was probably uploaded whilst the run started -> we will skip deleting it
+					emit("manifest %s does not have a mod time", dgst)
 				}
-			}
 
-			if !removeDueToNotNeeded && opts.RemoveUntagged {
-				// fetch all tags where this manifest is the latest one
-				tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
-				if err != nil {
-					return fmt.Errorf("failed to retrieve tags for digest %v: %v", dgst, err)
+				if ok && modTime.Before(opts.OlderThan) {
+					// Get tags that currently refer to this manifest and those that used to refer to it.
+					currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+					if err != nil {
+						return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
+					}
+					manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
+					return nil
 				}
-				if len(tags) == 0 {
-					removeDueToUntagged = true
-					emit("remove manifest %s: untagged", dgst)
-				}
-			}
+			} else {
+				removeDueToUntagged := false
+				removeDueToNotNeeded := false
 
-			if removeDueToUntagged || removeDueToNotNeeded {
-				// Get tags that currently refer to this manifest and those that used to refer to it.
-				currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
-				if err != nil {
-					return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
+				if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
+					// For this repo we know exhaustively which images are needed.
+					// If this one is not part of that, get rid of it :-)
+					if _, needed := (*exhaustiveNeeded)[dgst]; !needed {
+						removeDueToNotNeeded = true
+						emit("remove manifest %s: not needed", dgst)
+					}
 				}
-				manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
-				return nil
+
+				if !removeDueToNotNeeded && opts.RemoveUntagged {
+					// fetch all tags where this manifest is the latest one
+					tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+					if err != nil {
+						return fmt.Errorf("failed to retrieve tags for digest %v: %v", dgst, err)
+					}
+					if len(tags) == 0 {
+						removeDueToUntagged = true
+						emit("remove manifest %s: untagged", dgst)
+					}
+				}
+
+				if removeDueToUntagged || removeDueToNotNeeded {
+					// Get tags that currently refer to this manifest and those that used to refer to it.
+					currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+					if err != nil {
+						return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
+					}
+					manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
+					return nil
+				}
 			}
 
 			// Mark the manifest's blob
-			emit("%s: marking manifest %s ", repoName, dgst)
+			emit("%s: marking manifest %s for not_delete", repoName, dgst)
 			delete(maybeDeleteBlobs, dgst)
 			markSet[dgst] = struct{}{}
 
@@ -178,11 +209,12 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 		var deleteLayers []digest.Digest
 		err = layerEnumerator.Enumerate(ctx, func(dgst digest.Digest) error {
+			mt := blobModTime[dgst]
 			if _, shouldBeDeleted := maybeDeleteBlobs[dgst]; shouldBeDeleted {
-				emit("mark layer %s %s for delete", repoName, dgst)
+				emit("mark layer %s %s for delete, %s", repoName, dgst, mt.Format(time.RFC3339))
 				deleteLayers = append(deleteLayers, dgst)
 			} else {
-				emit("mark layer %s %s for not_delete", repoName, dgst)
+				emit("mark layer %s %s for not_delete, %s", repoName, dgst, mt.Format(time.RFC3339))
 				repoUsedBlobs[dgst] = allBlobs[dgst]
 			}
 			return nil
@@ -202,7 +234,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		emit("Repo blob size %s: %d MB", repoName, totalBlobSize/1024/1024)
 	}
 
-	manifestArr = unmarkReferencedManifest(manifestArr, markSet)
+	manifestArr = unmarkReferencedManifest(manifestArr, markSet, blobModTime)
 
 	var totalBlobSize int64
 	for dgst := range maybeDeleteBlobs {
@@ -211,7 +243,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 	// sweep
 	emit("\n%d blobs marked, %d blobs and %d manifests eligible for deletion", len(markSet), len(maybeDeleteBlobs), len(manifestArr))
-	emit("\n%d Will free %d MB in total", totalBlobSize/1024/1024)
+	emit("ill free %d MB in total", totalBlobSize/1024/1024)
 
 	return Sweep(ctx, storageDriver, opts.DryRun, ToDelete{
 		ManifestsToDelete: manifestArr,
@@ -266,11 +298,12 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 }
 
 // unmarkReferencedManifest filters out manifest present in markSet
-func unmarkReferencedManifest(manifestArr []ManifestDel, markSet map[digest.Digest]struct{}) []ManifestDel {
+func unmarkReferencedManifest(manifestArr []ManifestDel, markSet map[digest.Digest]struct{}, blobs map[digest.Digest]time.Time) []ManifestDel {
 	filtered := make([]ManifestDel, 0)
 	for _, obj := range manifestArr {
 		if _, ok := markSet[obj.Digest]; !ok {
-			emit("manifest eligible for deletion: %s", obj)
+			emit("manifest eligible for deletion: %s, %s", obj, blobs[obj.Digest].Format(time.RFC3339))
+
 			filtered = append(filtered, obj)
 		}
 	}
