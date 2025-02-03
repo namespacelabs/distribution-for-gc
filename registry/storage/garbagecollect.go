@@ -243,7 +243,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 
 	// sweep
 	emit("\n%d blobs marked, %d blobs and %d manifests eligible for deletion", len(markSet), len(maybeDeleteBlobs), len(manifestArr))
-	emit("ill free %d MB in total", totalBlobSize/1024/1024)
+	emit("will free %d MB in total", totalBlobSize/1024/1024)
 
 	return Sweep(ctx, storageDriver, opts.DryRun, ToDelete{
 		ManifestsToDelete: manifestArr,
