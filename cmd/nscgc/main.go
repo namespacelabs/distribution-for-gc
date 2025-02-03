@@ -20,6 +20,7 @@ var (
 	exhaustiveNeededImages   = flag.String("exhaustive_needed", "", "file that contains image manifests that are needed")
 	exhaustiveNeededImagesV2 = flag.String("exhaustive_needed_v2", "", "file that contains image manifests that are needed, v2")
 	realRunFromDryRun        = flag.String("real_run_from_dry_run", "", "pass dry run log, will delete what dry run marked")
+	dropManifestsOlderThan   = flag.String("drop_manifests_older_than", "", "if passed, manifests older than this age will be dropped")
 )
 
 func main() {
@@ -92,13 +93,25 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("failed to make registry: %w", err)
 	}
 
-	olderThan := time.Now().Add(-3 * 24 * time.Hour)
+	olderThan := time.Now().UTC().Add(-3 * 24 * time.Hour)
+	deleteManifests := false
+
+	if dropManifestsOlderThan != nil && *dropManifestsOlderThan != "" {
+		since, err := time.ParseDuration(*dropManifestsOlderThan)
+		if err != nil {
+			return err
+		}
+
+		olderThan = time.Now().UTC().Add(-since)
+		deleteManifests = true
+	}
 
 	if err := storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{
 		DryRun:           *dryRun,
 		RemoveUntagged:   *removeUntagged,
 		OlderThan:        olderThan,
 		ExhaustiveNeeded: exhaustiveNeeded,
+		DeleteManifests:  deleteManifests,
 	}); err != nil {
 		return fmt.Errorf("failed to garbage collect: %v", err)
 	}
