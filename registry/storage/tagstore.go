@@ -237,10 +237,12 @@ func (ts *tagStore) ManifestDigests(ctx context.Context, tag string) ([]digest.D
 
 func (ts *tagStore) Lookup2(ctx context.Context, desc distribution.Descriptor) ([]string, []string, error) {
 	if ts.digestToCurrent == nil || ts.digestToHist == nil {
+		fmt.Printf("building tag map for %s\n", ts.repository.Named().String())
 		err := ts.buildMap(ctx)
 		if err != nil {
 			return nil, nil, err
 		}
+		fmt.Printf("  done building tag map for %s\n", ts.repository.Named().String())
 	}
 
 	return ts.digestToCurrent[desc.Digest], ts.digestToHist[desc.Digest], nil

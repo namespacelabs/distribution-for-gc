@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -143,9 +144,12 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 				removeDueToNotNeeded := false
 
 				if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
-					// For this repo we know exhaustively which images are needed.
-					// If this one is not part of that, get rid of it :-)
-					if _, needed := (*exhaustiveNeeded)[dgst]; !needed {
+					needed, err := manifestNeeded(ctx, tagsService, *exhaustiveNeeded, dgst, nil)
+					if err != nil {
+						return err
+					}
+
+					if !needed {
 						removeDueToNotNeeded = true
 						emit("remove manifest %s: not needed", dgst)
 					}
@@ -250,6 +254,56 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		BlobsToDelete:     maybeDeleteBlobs,
 		LayersToDelete:    deleteLayerSet,
 	})
+}
+
+func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededImages, dgst digest.Digest, nestingPath []string) (bool, error) {
+	if len(nestingPath) >= 3 {
+		return false, fmt.Errorf("too long manifest tag reference chain on %s->%s", strings.Join(nestingPath, "->"), dgst.Encoded())
+	}
+	// For this repo we know exhaustively which images are needed.
+	// If this one is not part of that, get rid of it :-)
+	if _, needed := needed[dgst]; needed {
+		emit("manifest %s: needed: digest match %s", dgst, strings.Join(nestingPath, "->"))
+		return true, nil
+	}
+
+	// fetch all tags where this manifest is the latest one
+	tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch tags of %s: %v", dgst.Encoded(), err)
+	}
+
+	for _, tag := range tags {
+		referencedDigest := findDigest(tag)
+		if referencedDigest == "" {
+			continue
+		}
+
+		innerDgst := digest.NewDigestFromEncoded(digest.SHA256, referencedDigest)
+		if innerDgst == dgst {
+			continue
+		}
+
+		needed, err := manifestNeeded(ctx, tagsService, needed, innerDgst, append(nestingPath, dgst.Encoded()))
+		if err != nil {
+			return false, err
+		}
+
+		if needed {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+var (
+	// sha256
+	digestRegex = regexp.MustCompile("[A-Fa-f0-9]{64}")
+)
+
+func findDigest(in string) string {
+	return digestRegex.FindString(in)
 }
 
 func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool, what ToDelete) error {
