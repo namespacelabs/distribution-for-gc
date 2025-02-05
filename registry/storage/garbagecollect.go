@@ -78,13 +78,12 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	maybeDeleteBlobs := make(map[digest.Digest]struct{})
 	err = blobService.Enumerate(ctx, func(dgst digest.Digest, modTime time.Time, size int64) error {
 		blobModTime[dgst] = modTime
+		allBlobs[dgst] = size
 
-		if modTime.After(opts.OlderThan) {
-			return nil
+		if modTime.Before(opts.OlderThan) {
+			maybeDeleteBlobs[dgst] = struct{}{}
 		}
 
-		allBlobs[dgst] = size
-		maybeDeleteBlobs[dgst] = struct{}{}
 		return nil
 	})
 	if err != nil {
@@ -136,60 +135,59 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		}
 
 		err = manifestEnumerator.Enumerate(ctx, func(dgst digest.Digest) error {
-			if opts.DeleteManifests {
-				modTime, ok := blobModTime[dgst]
+			modTime, hasModTime := blobModTime[dgst]
 
-				if !ok {
-					// in this case it was probably uploaded whilst the run started -> we will skip deleting it
-					emit("manifest %s does not have a mod time", dgst)
+			if !hasModTime {
+				// in this case it was probably uploaded whilst the run started -> we will skip deleting it
+				emit("manifest %s does not have a mod time", dgst)
+			}
+
+			removeDueToExpired := false
+			removeDueToUntagged := false
+			removeDueToNotNeeded := false
+
+			if opts.DeleteManifests && hasModTime && modTime.Before(opts.OlderThan) {
+				removeDueToExpired = true
+			}
+
+			if !removeDueToExpired && exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
+				// For this repo we know exhaustively which images are needed.
+				// If this one is not part of that, get rid of it :-)
+				needed, err := manifestNeeded(ctx, tagsService, *exhaustiveNeeded, dgst, []digest.Digest{dgst})
+				if err != nil {
+					return err
 				}
 
-				if ok && modTime.Before(opts.OlderThan) {
-					// Get tags that currently refer to this manifest and those that used to refer to it.
-					currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
-					if err != nil {
-						return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
-					}
-					manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
-					return nil
-				}
-			} else {
-				removeDueToUntagged := false
-				removeDueToNotNeeded := false
-
-				if exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
-					needed, err := manifestNeeded(ctx, tagsService, *exhaustiveNeeded, dgst, nil)
-					if err != nil {
-						return err
-					}
-
-					if !needed {
+				if !needed {
+					if hasModTime && modTime.After(opts.OlderThan) {
+						emit("keeping manifest %s due to recent mod time %s even though it's not in exhaustive needed set", dgst, modTime.Format(time.RFC3339))
+					} else {
 						removeDueToNotNeeded = true
 						emit("remove manifest %s: not needed", dgst)
 					}
 				}
+			}
 
-				if !removeDueToNotNeeded && opts.RemoveUntagged {
-					// fetch all tags where this manifest is the latest one
-					tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
-					if err != nil {
-						return fmt.Errorf("failed to retrieve tags for digest %v: %v", dgst, err)
-					}
-					if len(tags) == 0 {
-						removeDueToUntagged = true
-						emit("remove manifest %s: untagged", dgst)
-					}
+			if !removeDueToExpired && !removeDueToNotNeeded && opts.RemoveUntagged {
+				// fetch all tags where this manifest is the latest one
+				tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+				if err != nil {
+					return fmt.Errorf("failed to retrieve tags for digest %v: %v", dgst, err)
 				}
+				if len(tags) == 0 {
+					removeDueToUntagged = true
+					emit("remove manifest %s: untagged", dgst)
+				}
+			}
 
-				if removeDueToUntagged || removeDueToNotNeeded {
-					// Get tags that currently refer to this manifest and those that used to refer to it.
-					currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
-					if err != nil {
-						return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
-					}
-					manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
-					return nil
+			if removeDueToExpired || removeDueToUntagged || removeDueToNotNeeded {
+				// Get tags that currently refer to this manifest and those that used to refer to it.
+				currentTags, histTags, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+				if err != nil {
+					return fmt.Errorf("failed to retrieve current tags for digest %v: %v", dgst, err)
 				}
+				manifestArr = append(manifestArr, ManifestDel{Name: repoName, Digest: dgst, CurrentTags: currentTags, HistTags: histTags})
+				return nil
 			}
 
 			// Mark the manifest's blob
@@ -293,15 +291,15 @@ func resolveManifestIndices(ctx context.Context, manifestService distribution.Ma
 	return res, nil
 }
 
-func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededImages, dgst digest.Digest, nestingPath []string) (bool, error) {
-	if len(nestingPath) >= 3 {
-		return false, fmt.Errorf("too long manifest tag reference chain on %s->%s", strings.Join(nestingPath, "->"), dgst.Encoded())
+func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededImages, dgst digest.Digest, path []digest.Digest) (bool, error) {
+	if len(path) >= 3 {
+		return false, fmt.Errorf("too long manifest tag reference chain %s", formatManifestChain(path))
 	}
-	// For this repo we know exhaustively which images are needed.
-	// If this one is not part of that, get rid of it :-)
-	if _, needed := needed[dgst]; needed {
-		emit("manifest %s: needed: digest match %s", dgst, strings.Join(nestingPath, "->"))
-		return true, nil
+	for _, part := range path {
+		if _, needed := needed[part]; needed {
+			emit("manifest %s: needed: %s matched exhaustive needed set", dgst, formatManifestChain(path))
+			return true, nil
+		}
 	}
 
 	// fetch all tags where this manifest is the latest one
@@ -321,7 +319,7 @@ func manifestNeeded(ctx context.Context, tagsService distribution.TagService, ne
 			continue
 		}
 
-		needed, err := manifestNeeded(ctx, tagsService, needed, innerDgst, append(nestingPath, dgst.Encoded()))
+		needed, err := manifestNeeded(ctx, tagsService, needed, dgst, append(path, dgst))
 		if err != nil {
 			return false, err
 		}
@@ -332,6 +330,20 @@ func manifestNeeded(ctx context.Context, tagsService distribution.TagService, ne
 	}
 
 	return false, nil
+}
+
+func formatManifestChain(m []digest.Digest) string {
+	if len(m) == 0 {
+		return "(empty path)"
+	}
+
+	res := m[0].Encoded()
+
+	for i := 1; i < len(m); i++ {
+		res += "->" + m[i].Encoded()
+	}
+
+	return res
 }
 
 var (
