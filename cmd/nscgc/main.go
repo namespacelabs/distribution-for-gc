@@ -93,7 +93,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("failed to make registry: %w", err)
 	}
 
-	olderThan := time.Now().UTC().Add(-3 * 24 * time.Hour)
+	olderThan := time.Now().UTC().Add(-7 * 24 * time.Hour)
 	deleteManifests := false
 
 	if dropManifestsOlderThan != nil && *dropManifestsOlderThan != "" {
