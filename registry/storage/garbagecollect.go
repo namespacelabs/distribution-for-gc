@@ -315,7 +315,17 @@ func manifestNeeded(ctx context.Context, tagsService distribution.TagService, ne
 		}
 
 		innerDgst := digest.NewDigestFromEncoded(digest.SHA256, referencedDigest)
-		if innerDgst == dgst {
+
+		// Don't follow circles (e.g. a manifest that has a tag that mentions its own digest)
+		alreadySeen := false
+		for _, part := range path {
+			if innerDgst == part {
+				alreadySeen = true
+				break
+			}
+		}
+
+		if alreadySeen {
 			continue
 		}
 
