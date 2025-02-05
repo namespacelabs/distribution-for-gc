@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/manifest/ocischema"
 	"github.com/distribution/distribution/v3/registry/storage/driver"
 	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
@@ -69,6 +70,8 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		return err
 	}
 
+	repos["namespacelabs.dev/internal/service/githubrunner/container/ubuntu2204"] = struct{}{}
+
 	blobService := registry.Blobs()
 	allBlobs := make(map[digest.Digest]int64)        // all blobs and their size
 	blobModTime := make(map[digest.Digest]time.Time) // all blobs and their mod time
@@ -114,6 +117,17 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		manifestService, err := repository.Manifests(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to construct manifest service: %v", err)
+		}
+
+		if exhaustiveNeeded != nil {
+			additionalNeeded, err := resolveManifestIndices(ctx, manifestService, *exhaustiveNeeded)
+			if err != nil {
+				return err
+			}
+
+			for img := range additionalNeeded {
+				(*exhaustiveNeeded)[img] = struct{}{}
+			}
 		}
 
 		manifestEnumerator, ok := manifestService.(distribution.ManifestEnumerator)
@@ -254,6 +268,29 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		BlobsToDelete:     maybeDeleteBlobs,
 		LayersToDelete:    deleteLayerSet,
 	})
+}
+
+func resolveManifestIndices(ctx context.Context, manifestService distribution.ManifestService, needed NeededImages) (NeededImages, error) {
+	res := NeededImages{}
+	emit("resolving manifest indices ..")
+	for img := range needed {
+		manifest, err := manifestService.Get(ctx, img)
+		if _, unknown := err.(*distribution.ErrManifestUnknown); unknown {
+			continue
+		}
+
+		index, ok := manifest.(*ocischema.DeserializedImageIndex)
+		if !ok {
+			continue
+		}
+		for _, man := range index.Manifests {
+			res[man.Digest] = struct{}{}
+			emit("for index %s discovered %s", img.Encoded(), man.Digest.Encoded())
+		}
+	}
+	emit("  resolving manifest indices done")
+
+	return res, nil
 }
 
 func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededImages, dgst digest.Digest, nestingPath []string) (bool, error) {
