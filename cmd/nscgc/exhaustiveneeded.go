@@ -76,7 +76,7 @@ func parsePerRepo(path string, res map[string]storage.NeededDigests) error {
 
 func dumpExhaustiveNeeded(en *storage.ExhaustiveNeededImages) {
 	if len(en.Digests) != 0 {
-		fmt.Println("got pattern-based exhaustive needed for '%s':\n", en.Pattern.String())
+		fmt.Printf("got pattern-based exhaustive needed for '%s':\n", en.Pattern.String())
 		for n := range en.Digests {
 			fmt.Printf("   %s\n", n)
 		}
