@@ -19,15 +19,21 @@ func emit(format string, a ...interface{}) {
 	fmt.Printf(format+"\n", a...)
 }
 
-type NeededImages map[digest.Digest]struct{}
-type ExhaustiveNeededImages map[string]*NeededImages
+type NeededDigests map[digest.Digest]struct{}
+
+// V2 /  pattern-based exhaustive needed
+type ExhaustiveNeededImages struct {
+	Pattern *regexp.Regexp
+	Digests NeededDigests
+	PerRepo map[string]NeededDigests
+}
 
 // GCOpts contains options for garbage collector
 type GCOpts struct {
 	DryRun           bool
 	RemoveUntagged   bool
 	OlderThan        time.Time
-	ExhaustiveNeeded ExhaustiveNeededImages
+	ExhaustiveNeeded *ExhaustiveNeededImages
 	DeleteManifests  bool
 }
 
@@ -98,8 +104,8 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	for repoName := range repos {
 		repoUsedBlobs := make(map[digest.Digest]int64)
 
-		emit("Looking at repo %s", repoName)
-		exhaustiveNeeded := opts.ExhaustiveNeeded[repoName]
+		exhaustiveNeeded := constructExhaustiveNeededForRepo(opts.ExhaustiveNeeded, repoName)
+		emit("Looking at repo %s (exhaustive needed: %d)", repoName, len(exhaustiveNeeded))
 
 		var err error
 		named, err := reference.WithName(repoName)
@@ -118,14 +124,15 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			return fmt.Errorf("failed to construct manifest service: %v", err)
 		}
 
-		if exhaustiveNeeded != nil {
-			additionalNeeded, err := resolveManifestIndices(ctx, manifestService, *exhaustiveNeeded)
+		// Note that if there's no needed image for a repo it currently means "keep all manifests in this repo".
+		if len(exhaustiveNeeded) != 0 {
+			additionalNeeded, err := resolveManifestIndices(ctx, manifestService, exhaustiveNeeded)
 			if err != nil {
 				return err
 			}
 
 			for img := range additionalNeeded {
-				(*exhaustiveNeeded)[img] = struct{}{}
+				exhaustiveNeeded[img] = struct{}{}
 			}
 		}
 
@@ -150,10 +157,10 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 				removeDueToExpired = true
 			}
 
-			if !removeDueToExpired && exhaustiveNeeded != nil && len(*exhaustiveNeeded) > 0 {
+			if !removeDueToExpired && len(exhaustiveNeeded) > 0 {
 				// For this repo we know exhaustively which images are needed.
 				// If this one is not part of that, get rid of it :-)
-				needed, err := manifestNeeded(ctx, tagsService, *exhaustiveNeeded, dgst, []digest.Digest{dgst})
+				needed, err := manifestNeeded(ctx, tagsService, exhaustiveNeeded, dgst, []digest.Digest{dgst})
 				if err != nil {
 					return err
 				}
@@ -268,8 +275,30 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	})
 }
 
-func resolveManifestIndices(ctx context.Context, manifestService distribution.ManifestService, needed NeededImages) (NeededImages, error) {
-	res := NeededImages{}
+func constructExhaustiveNeededForRepo(en *ExhaustiveNeededImages, repoName string) NeededDigests {
+	if en == nil {
+		return nil
+	}
+
+	res := NeededDigests{}
+
+	if perRepo, ok := en.PerRepo[repoName]; ok {
+		for d := range perRepo {
+			res[d] = struct{}{}
+		}
+	}
+
+	if en.Pattern != nil && en.Pattern.MatchString(repoName) {
+		for d := range en.Digests {
+			res[d] = struct{}{}
+		}
+	}
+
+	return res
+}
+
+func resolveManifestIndices(ctx context.Context, manifestService distribution.ManifestService, needed NeededDigests) (NeededDigests, error) {
+	res := NeededDigests{}
 	emit("resolving manifest indices ..")
 	for img := range needed {
 		manifest, err := manifestService.Get(ctx, img)
@@ -291,7 +320,7 @@ func resolveManifestIndices(ctx context.Context, manifestService distribution.Ma
 	return res, nil
 }
 
-func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededImages, dgst digest.Digest, path []digest.Digest) (bool, error) {
+func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededDigests, dgst digest.Digest, path []digest.Digest) (bool, error) {
 	if len(path) >= 3 {
 		return false, fmt.Errorf("too long manifest tag reference chain %s", formatManifestChain(path))
 	}

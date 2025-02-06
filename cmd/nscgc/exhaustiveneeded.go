@@ -10,12 +10,34 @@ import (
 	"github.com/opencontainers/go-digest"
 )
 
-func parseExhaustiveNeeded(path string) (storage.ExhaustiveNeededImages, error) {
+func parseExhaustiveNeeded(perRepoPath string, patternIn string, patternPath string) (storage.ExhaustiveNeededImages, error) {
 	res := storage.ExhaustiveNeededImages{}
 
+	if perRepoPath != "" {
+		err := parsePerRepo(perRepoPath, res.PerRepo)
+		if err != nil {
+			return res, err
+		}
+	}
+
+	if patternPath != "" {
+		if patternIn == "" {
+			return res, fmt.Errorf("for exhaustive needed v2, need a pattern too")
+		}
+
+		err := parsePatternBased(patternIn, patternPath, &res)
+		if err != nil {
+			return res, err
+		}
+	}
+
+	return res, nil
+}
+
+func parsePerRepo(path string, res map[string]storage.NeededDigests) error {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
 
@@ -28,53 +50,60 @@ func parseExhaustiveNeeded(path string) (storage.ExhaustiveNeededImages, error) 
 
 		ref, err := ParseImageRef(line)
 		if err != nil {
-			return nil, fmt.Errorf("could not parse %s: %v", line, err)
+			return fmt.Errorf("could not parse %s: %v", line, err)
 		}
 
 		if ref.Digest == "" {
-			return nil, fmt.Errorf("currently only supports images refrenced by digest, got something else for %s", ref.Repository)
+			return fmt.Errorf("currently only supports images refrenced by digest, got something else for %s", ref.Repository)
 		}
 
 		m := res[ref.Repository]
 		if m == nil {
-			m = &storage.NeededImages{}
+			m = storage.NeededDigests{}
 			res[ref.Repository] = m
 		}
 
-		(*m)[digest.Digest(ref.Digest)] = struct{}{}
+		m[digest.Digest(ref.Digest)] = struct{}{}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return err
 	}
 
-	return res, nil
+	return nil
+
 }
 
-func dumpExhaustiveNeeded(en storage.ExhaustiveNeededImages) {
-	if len(en) == 0 {
-		fmt.Println("exhaustive needed map empty")
-		return
+func dumpExhaustiveNeeded(en *storage.ExhaustiveNeededImages) {
+	if len(en.Digests) != 0 {
+		fmt.Println("got pattern-based exhaustive needed for '%s':\n", en.Pattern.String())
+		for n := range en.Digests {
+			fmt.Printf("   %s\n", n)
+		}
 	}
 
-	for repo, needed := range en {
-		fmt.Printf("got exhaustive needed set for %s:\n", repo)
-		for n := range *needed {
+	for repo, needed := range en.PerRepo {
+		fmt.Printf("got per-repo exhaustive needed set for %s:\n", repo)
+		for n := range needed {
 			fmt.Printf("   %s\n", n)
 		}
 	}
 }
 
-func parseExhaustiveNeededV2(path string) (storage.ExhaustiveNeededImages, error) {
-	res := storage.ExhaustiveNeededImages{}
+func parsePatternBased(patternIn string, path string, res *storage.ExhaustiveNeededImages) error {
+	pattern, err := regexp.Compile(patternIn)
+	if err != nil {
+		return fmt.Errorf("can't parse pattern: %v", err)
+	}
+	res.Pattern = pattern
+
+	res.Digests = storage.NeededDigests{}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
-
-	digests := false
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -83,34 +112,19 @@ func parseExhaustiveNeededV2(path string) (storage.ExhaustiveNeededImages, error
 			continue
 		}
 
-		if !digests && digestRegex.MatchString(line) {
-			digests = true
+		if !digestRegex.MatchString(line) {
+			return fmt.Errorf("exhaustive needed parsing: expected digest but got %s", line)
 		}
 
-		if digests && !digestRegex.MatchString(line) {
-			return nil, fmt.Errorf("didn't expect non-digest %s", line)
-		}
-
-		if !digests {
-			m := res[line]
-			if m == nil {
-				m = &storage.NeededImages{}
-				res[line] = m
-			}
-		}
-		if digests {
-			d := digest.NewDigestFromEncoded(digest.SHA256, line)
-			for _, repo := range res {
-				(*repo)[d] = struct{}{}
-			}
-		}
+		d := digest.NewDigestFromEncoded(digest.SHA256, line)
+		res.Digests[d] = struct{}{}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return err
 	}
 
-	return res, nil
+	return nil
 }
 
 var (
