@@ -329,7 +329,7 @@ func manifestNeeded(ctx context.Context, tagsService distribution.TagService, ne
 			continue
 		}
 
-		needed, err := manifestNeeded(ctx, tagsService, needed, dgst, append(path, dgst))
+		needed, err := manifestNeeded(ctx, tagsService, needed, dgst, append(path, innerDgst))
 		if err != nil {
 			return false, err
 		}
