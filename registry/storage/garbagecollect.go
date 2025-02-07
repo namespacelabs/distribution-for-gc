@@ -76,8 +76,6 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		return err
 	}
 
-	repos["namespacelabs.dev/internal/service/githubrunner/container/ubuntu2204"] = struct{}{}
-
 	blobService := registry.Blobs()
 	allBlobs := make(map[digest.Digest]int64)        // all blobs and their size
 	blobModTime := make(map[digest.Digest]time.Time) // all blobs and their mod time
