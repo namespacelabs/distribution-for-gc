@@ -407,7 +407,7 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 	vacuum := NewVacuum(ctx, storageDriver)
 
 	for _, obj := range what.ManifestsToDelete {
-		emit("PMDELETEMANIFEST %s|%s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.CurrentTags, ","), strings.Join(obj.HistTags, ","))
+		emit("DEL_MANIFEST %s|%s|%s|%s", obj.Name, obj.Digest, strings.Join(obj.CurrentTags, ","), strings.Join(obj.HistTags, ","))
 		if dryRun {
 			continue
 		}
@@ -419,7 +419,7 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 	}
 
 	for dgst := range what.BlobsToDelete {
-		emit("PMDELETEBLOB %s", dgst)
+		emit("DEL_BLOB %s", dgst)
 		if dryRun {
 			continue
 		}
@@ -432,7 +432,7 @@ func Sweep(ctx context.Context, storageDriver driver.StorageDriver, dryRun bool,
 
 	for repo, dgsts := range what.LayersToDelete {
 		for _, dgst := range dgsts {
-			emit("PMDELETELAYER %s|%s", repo, dgst)
+			emit("DEL_LAYER %s|%s", repo, dgst)
 			if dryRun {
 				continue
 			}

@@ -28,14 +28,14 @@ func parseFromDryRun(path string) (storage.ToDelete, error) {
 	scanner.Buffer(buf, 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "PMDELETEBLOB ") {
-			dgst := digest.Digest(strings.TrimPrefix(line, "PMDELETEBLOB "))
+		if strings.HasPrefix(line, "DEL_BLOB ") {
+			dgst := digest.Digest(strings.TrimPrefix(line, "DEL_BLOB "))
 			res.BlobsToDelete[dgst] = struct{}{}
 			continue
 		}
 
-		if strings.HasPrefix(line, "PMDELETELAYER ") {
-			params := strings.TrimPrefix(line, "PMDELETELAYER ")
+		if strings.HasPrefix(line, "DEL_LAYER ") {
+			params := strings.TrimPrefix(line, "DEL_LAYER ")
 			parts := strings.Split(params, "|")
 			if len(parts) != 2 {
 				return res, fmt.Errorf(" could not parse %s", line)
@@ -46,8 +46,8 @@ func parseFromDryRun(path string) (storage.ToDelete, error) {
 			continue
 		}
 
-		if strings.HasPrefix(line, "PMDELETEMANIFEST ") {
-			params := strings.TrimPrefix(line, "PMDELETEMANIFEST ")
+		if strings.HasPrefix(line, "DEL_MANIFEST ") {
+			params := strings.TrimPrefix(line, "DEL_MANIFEST ")
 			parts := strings.Split(params, "|")
 			if len(parts) != 4 {
 				return res, fmt.Errorf(" could not parse %s", line)
