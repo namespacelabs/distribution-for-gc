@@ -158,7 +158,7 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 			if !removeDueToExpired && len(exhaustiveNeeded) > 0 {
 				// For this repo we know exhaustively which images are needed.
 				// If this one is not part of that, get rid of it :-)
-				needed, err := manifestNeeded(ctx, tagsService, exhaustiveNeeded, dgst, []digest.Digest{dgst})
+				needed, err := manifestNeeded(ctx, tagsService, exhaustiveNeeded, dgst)
 				if err != nil {
 					return err
 				}
@@ -318,21 +318,32 @@ func resolveManifestIndices(ctx context.Context, manifestService distribution.Ma
 	return res, nil
 }
 
-func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededDigests, dgst digest.Digest, path []digest.Digest) (bool, error) {
+// Checks if `dgst` is needed according to `needed`.
+// Needed case 1: `dgst` may be needed directly, i.e. `needed` contains it.
+// Needed case 2: If there is a tag t1 that points to `dgst`, and if t1's name happens to contain a digest (as a sha256 hash), and if *that* digest is needed, `dgst` is also needed.
+// This is checked transitively up to a certain depth.`
+func manifestNeeded(ctx context.Context, tagsService distribution.TagService, needed NeededDigests, dgst digest.Digest) (bool, error) {
+	return manifestNeededInner(ctx, tagsService, needed, []digest.Digest{dgst})
+}
+
+func manifestNeededInner(ctx context.Context, tagsService distribution.TagService, needed NeededDigests, path []digest.Digest) (bool, error) {
+	if len(path) == 0 {
+		return false, fmt.Errorf("internal error: manifestNeededInner called without a path - needs at least one element")
+	}
 	if len(path) >= 3 {
 		return false, fmt.Errorf("too long manifest tag reference chain %s", formatManifestChain(path))
 	}
-	for _, part := range path {
-		if _, needed := needed[part]; needed {
-			emit("manifest %s: needed: %s matched exhaustive needed set", dgst, formatManifestChain(path))
-			return true, nil
-		}
+	root := path[0]
+	leaf := path[len(path)-1]
+	if _, leafNeeded := needed[leaf]; leafNeeded {
+		emit("manifest %s: needed: %s matched exhaustive needed set", root, formatManifestChain(path))
+		return true, nil
 	}
 
 	// fetch all tags where this manifest is the latest one
-	tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: dgst})
+	tags, _, err := tagsService.Lookup2(ctx, distribution.Descriptor{Digest: leaf})
 	if err != nil {
-		return false, fmt.Errorf("failed to fetch tags of %s: %v", dgst.Encoded(), err)
+		return false, fmt.Errorf("failed to fetch tags of %s: %v", leaf.Encoded(), err)
 	}
 
 	for _, tag := range tags {
@@ -356,12 +367,12 @@ func manifestNeeded(ctx context.Context, tagsService distribution.TagService, ne
 			continue
 		}
 
-		needed, err := manifestNeeded(ctx, tagsService, needed, dgst, append(path, innerDgst))
+		innerNeeded, err := manifestNeededInner(ctx, tagsService, needed, append(path, innerDgst))
 		if err != nil {
 			return false, err
 		}
 
-		if needed {
+		if innerNeeded {
 			return true, nil
 		}
 	}
