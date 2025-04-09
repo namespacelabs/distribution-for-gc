@@ -21,11 +21,9 @@ func emit(format string, a ...interface{}) {
 
 type NeededDigests map[digest.Digest]struct{}
 
-// V2 /  pattern-based exhaustive needed
 type ExhaustiveNeededImages struct {
 	Pattern *regexp.Regexp
 	Digests NeededDigests
-	PerRepo map[string]NeededDigests
 }
 
 // GCOpts contains options for garbage collector
@@ -33,8 +31,8 @@ type GCOpts struct {
 	DryRun           bool
 	RemoveUntagged   bool
 	OlderThan        time.Time
-	ExhaustiveNeeded *ExhaustiveNeededImages
-	DeleteManifests  bool
+	ExhaustiveNeeded *ExhaustiveNeededImages // If non-nil, manifests older than OlderThan which are not matched by this will get removed
+	DeleteManifests  bool                    // If true, all manifests older than OlderThan will be removed
 }
 
 type ToDelete struct {
@@ -102,8 +100,8 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	for repoName := range repos {
 		repoUsedBlobs := make(map[digest.Digest]int64)
 
-		exhaustiveNeeded := constructExhaustiveNeededForRepo(opts.ExhaustiveNeeded, repoName)
-		emit("Looking at repo %s (exhaustive needed: %d)", repoName, len(exhaustiveNeeded))
+		neededDigests := neededDigestsForRepo(opts.ExhaustiveNeeded, repoName)
+		emit("Looking at repo %s (exhaustive needed: %d)", repoName, len(neededDigests))
 
 		var err error
 		named, err := reference.WithName(repoName)
@@ -123,14 +121,14 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 		}
 
 		// Note that if there's no needed image for a repo it currently means "keep all manifests in this repo".
-		if len(exhaustiveNeeded) != 0 {
-			additionalNeeded, err := resolveManifestIndices(ctx, manifestService, exhaustiveNeeded)
+		if len(neededDigests) != 0 {
+			additionalNeeded, err := resolveManifestIndices(ctx, manifestService, neededDigests)
 			if err != nil {
 				return err
 			}
 
 			for img := range additionalNeeded {
-				exhaustiveNeeded[img] = struct{}{}
+				neededDigests[img] = struct{}{}
 			}
 		}
 
@@ -155,10 +153,10 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 				removeDueToExpired = true
 			}
 
-			if !removeDueToExpired && len(exhaustiveNeeded) > 0 {
+			if !removeDueToExpired && len(neededDigests) > 0 {
 				// For this repo we know exhaustively which images are needed.
 				// If this one is not part of that, get rid of it :-)
-				needed, err := manifestNeeded(ctx, tagsService, exhaustiveNeeded, dgst)
+				needed, err := manifestNeeded(ctx, tagsService, neededDigests, dgst)
 				if err != nil {
 					return err
 				}
@@ -273,26 +271,13 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	})
 }
 
-func constructExhaustiveNeededForRepo(en *ExhaustiveNeededImages, repoName string) NeededDigests {
-	if en == nil {
-		return nil
+// If this returns something with len() == 0 it currently means "keep all digests"
+func neededDigestsForRepo(en *ExhaustiveNeededImages, repoName string) NeededDigests {
+	if en != nil && en.Pattern != nil && en.Pattern.MatchString(repoName) {
+		return en.Digests
 	}
 
-	res := NeededDigests{}
-
-	if perRepo, ok := en.PerRepo[repoName]; ok {
-		for d := range perRepo {
-			res[d] = struct{}{}
-		}
-	}
-
-	if en.Pattern != nil && en.Pattern.MatchString(repoName) {
-		for d := range en.Digests {
-			res[d] = struct{}{}
-		}
-	}
-
-	return res
+	return nil
 }
 
 func resolveManifestIndices(ctx context.Context, manifestService distribution.ManifestService, needed NeededDigests) (NeededDigests, error) {

@@ -15,13 +15,12 @@ import (
 )
 
 var (
-	dryRun                          = flag.Bool("dry_run", true, "do not actually remove the blobs")
-	removeUntagged                  = flag.Bool("remove_untagged", false, "delete manifests that are not currently referenced via tag")
-	exhaustiveNeededImages          = flag.String("exhaustive_needed", "", "file that contains image manifests that are needed")
-	exhaustiveNeededImagesV2        = flag.String("exhaustive_needed_v2", "", "file that contains image manifests that are needed, v2")
-	exhaustiveNeededImagesV2Pattern = flag.String("exhaustive_needed_v2_pattern", "", "regex pattern of repo names to apply exhaustive needed v2 on")
-	realRunFromDryRun               = flag.String("real_run_from_dry_run", "", "pass dry run log, will delete what dry run marked")
-	dropManifestsOlderThan          = flag.String("drop_manifests_older_than", "", "if passed, manifests older than this age will be dropped")
+	dryRun                 = flag.Bool("dry_run", true, "do not actually remove the blobs")
+	removeUntagged         = flag.Bool("remove_untagged", false, "delete manifests that are not currently referenced via tag")
+	neededDigestsFile      = flag.String("needed_digests_file", "", "file that contains image manifest digests that are still needed")
+	repoPattern            = flag.String("repo_pattern", "", "regex pattern of repo names to apply manifest GC on")
+	realRunFromDryRun      = flag.String("real_run_from_dry_run", "", "pass dry run log, will delete what dry run marked")
+	dropManifestsOlderThan = flag.String("drop_manifests_older_than", "", "if passed, manifests older than this age will be dropped")
 )
 
 func main() {
@@ -33,9 +32,17 @@ func main() {
 }
 
 func run(ctx context.Context) error {
+	if *neededDigestsFile == "" && *dropManifestsOlderThan == "" && *realRunFromDryRun == "" {
+		return fmt.Errorf("need either --needed_digests_file or --drop_manifests_older_than or --real_run_from_dry_run")
+	}
+
 	var exhaustiveNeeded *storage.ExhaustiveNeededImages
-	if *exhaustiveNeededImages != "" || *exhaustiveNeededImagesV2 != "" {
-		if en, err := parseExhaustiveNeeded(*exhaustiveNeededImages, *exhaustiveNeededImagesV2Pattern, *exhaustiveNeededImagesV2); err != nil {
+	if *neededDigestsFile != "" {
+		if *repoPattern == "" {
+			return fmt.Errorf("for --needed_digests_file, need --repo_pattern too")
+		}
+
+		if en, err := parseExhaustiveNeeded(*repoPattern, *neededDigestsFile); err != nil {
 			return err
 		} else {
 			exhaustiveNeeded = &en
