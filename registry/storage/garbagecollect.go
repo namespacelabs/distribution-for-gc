@@ -315,7 +315,7 @@ func manifestNeededInner(ctx context.Context, tagsService distribution.TagServic
 	if len(path) == 0 {
 		return false, fmt.Errorf("internal error: manifestNeededInner called without a path - needs at least one element")
 	}
-	if len(path) >= 3 {
+	if len(path) >= 5 {
 		return false, fmt.Errorf("too long manifest tag reference chain %s", formatManifestChain(path))
 	}
 	root := path[0]
