@@ -28,11 +28,12 @@ type ExhaustiveNeededImages struct {
 
 // GCOpts contains options for garbage collector
 type GCOpts struct {
-	DryRun           bool
-	RemoveUntagged   bool
-	OlderThan        time.Time
-	ExhaustiveNeeded *ExhaustiveNeededImages // If non-nil, manifests older than OlderThan which are not matched by this will get removed
-	DeleteManifests  bool                    // If true, all manifests older than OlderThan will be removed
+	DryRun             bool
+	RemoveUntagged     bool
+	OlderThan          time.Time
+	ExhaustiveNeeded   *ExhaustiveNeededImages // If non-nil, manifests older than OlderThan which are not matched by this will get removed
+	DeleteManifests    bool                    // If true, all manifests older than OlderThan will be removed
+	ExcludeRepoPattern *regexp.Regexp          // If non-nil, repos matching this pattern are excluded from GC entirely
 }
 
 type ToDelete struct {
@@ -98,6 +99,11 @@ func MarkAndSweep(ctx context.Context, storageDriver driver.StorageDriver, regis
 	manifestArr := make([]ManifestDel, 0)
 
 	for repoName := range repos {
+		if opts.ExcludeRepoPattern != nil && opts.ExcludeRepoPattern.MatchString(repoName) {
+			emit("Skipping repo %s (matches exclude pattern)", repoName)
+			continue
+		}
+
 		repoUsedBlobs := make(map[digest.Digest]int64)
 
 		neededDigests := neededDigestsForRepo(opts.ExhaustiveNeeded, repoName)

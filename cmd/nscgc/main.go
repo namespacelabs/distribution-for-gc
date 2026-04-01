@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/distribution/distribution/v3/configuration"
@@ -19,6 +20,7 @@ var (
 	removeUntagged         = flag.Bool("remove_untagged", false, "delete manifests that are not currently referenced via tag")
 	neededDigestsFile      = flag.String("needed_digests_file", "", "file that contains image manifest digests that are still needed")
 	repoPattern            = flag.String("repo_pattern", "", "regex pattern of repo names to apply manifest GC on")
+	excludeRepoPattern     = flag.String("exclude_repo_pattern", "", "regex pattern of repo names to exclude from GC entirely")
 	realRunFromDryRun      = flag.String("real_run_from_dry_run", "", "pass dry run log, will delete what dry run marked")
 	dropManifestsOlderThan = flag.String("drop_manifests_older_than", "", "if passed, manifests older than this age will be dropped")
 )
@@ -104,12 +106,22 @@ func run(ctx context.Context) error {
 		deleteManifests = true
 	}
 
+	var compiledExcludeRepoPattern *regexp.Regexp
+	if *excludeRepoPattern != "" {
+		var err error
+		compiledExcludeRepoPattern, err = regexp.Compile(*excludeRepoPattern)
+		if err != nil {
+			return fmt.Errorf("invalid --exclude_repo_pattern: %v", err)
+		}
+	}
+
 	if err := storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{
-		DryRun:           *dryRun,
-		RemoveUntagged:   *removeUntagged,
-		OlderThan:        olderThan,
-		ExhaustiveNeeded: exhaustiveNeeded,
-		DeleteManifests:  deleteManifests,
+		DryRun:             *dryRun,
+		RemoveUntagged:     *removeUntagged,
+		OlderThan:          olderThan,
+		ExhaustiveNeeded:   exhaustiveNeeded,
+		DeleteManifests:    deleteManifests,
+		ExcludeRepoPattern: compiledExcludeRepoPattern,
 	}); err != nil {
 		return fmt.Errorf("failed to garbage collect: %v", err)
 	}
